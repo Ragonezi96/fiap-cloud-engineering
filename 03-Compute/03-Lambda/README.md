@@ -218,10 +218,10 @@ Saída esperada: `10`.
 **6.** Pegue o link do **dashboard de observabilidade** (rode na pasta `fase-1-ingestao`) e abra no navegador:
 
 ```bash
-terraform -chdir=/workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-1-ingestao output -raw dashboard_url
+terraform -chdir=/workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-1-ingestao output -raw dashboard_url && echo
 ```
 
-Abra a URL impressa (ou navegue em CloudWatch → Dashboards → `PedeJa-Fase1-Ingestao`). Observe os **4 golden signals** da Lambda e o **faturamento por cidade**.
+Abra a URL impressa — ou vá direto pelo link **[CloudWatch → Dashboards → PedeJa-Fase1-Ingestao](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards/dashboard/PedeJa-Fase1-Ingestao)**. Observe os **4 golden signals** da Lambda e o **faturamento por cidade**.
 
 <!-- PRINT SUGERIDO: img/f1-dashboard.png
      Dashboard PedeJa-Fase1-Ingestao mostrando Invocacoes, Duration, Errors, ConcurrentExecutions e o grafico de faturamento por cidade. Capturar a tela inteira. -->
@@ -248,11 +248,61 @@ O `valor_pedido` por cidade é uma **métrica de negócio**, emitida pela própr
 </details>
 
 <a id="passo-7"></a>
-**7.** Veja o **trace distribuído** no X-Ray: no console, vá em **CloudWatch → X-Ray traces → Traces**. Cada pedido vira um trace mostrando `API Gateway → Lambda → S3`, com o tempo de cada salto. É a prova visual de que a Lambda é orientada a eventos e de onde o tempo é gasto.
+**7.** Veja o **log estruturado** que a Lambda emitiu — é onde a observabilidade fica visível no Learner Lab. Cada pedido virou uma linha JSON pesquisável, com o `xray_trace_id` (o id do trace distribuído), o `function_request_id`, `cold_start` e os dados de negócio:
 
-<!-- PRINT SUGERIDO: img/f1-xray.png
-     Service map do X-Ray mostrando o fluxo API Gateway -> Lambda -> S3, com os tempos de cada no. -->
-![](img/f1-xray.png)
+```bash
+aws logs filter-log-events \
+  --log-group-name "/aws/lambda/pedeja-ingestao" \
+  --start-time $(python3 -c "import time;print(int((time.time()-900)*1000))") \
+  --filter-pattern '"pedido gravado"' \
+  --query "events[0].message" --output text | head -1 | python3 -m json.tool
+```
+
+Saída esperada (uma linha por pedido; repare no `xray_trace_id` e no `cold_start`):
+
+```json
+{
+    "level": "INFO",
+    "message": "pedido gravado",
+    "service": "pedeja-ingestao",
+    "cold_start": true,
+    "function_request_id": "ccf1723b-...",
+    "pedido_id": "PED-0001",
+    "s3_key": "pedidos/dt=2026-03-15/PED-0001.json",
+    "cidade": "Sao Paulo",
+    "valor": 89.9,
+    "xray_trace_id": "1-6a3fd4bb-6a2825535738b6f4095cb776"
+}
+```
+
+<!-- PRINT SUGERIDO: img/f1-log.png
+     Saida do filter-log-events mostrando o JSON do log estruturado com xray_trace_id e cold_start. -->
+![](img/f1-log.png)
+
+> [!TIP]
+> Prefere ver no console? Abra o log group direto neste link: **[CloudWatch Logs → /aws/lambda/pedeja-ingestao](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fpedeja-ingestao)** (clique no log stream mais recente para ver as linhas JSON).
+
+<details>
+<summary><b>💡 Clique para entender — o <code>xray_trace_id</code> e o trace distribuído</b></summary>
+<blockquote>
+
+Cada requisição que entra pelo API Gateway recebe um **trace id** único (o `xray_trace_id`). Ele acompanha o pedido por todos os saltos (`API Gateway → Lambda → S3`), e o **Powertools Tracer** carimba esse id em todo log da execução. É assim que, em produção, você "puxa o fio" de um pedido específico através de vários serviços: filtra os logs por aquele `xray_trace_id` e vê tudo que aconteceu com ele.
+
+O `cold_start: true` indica que essa foi a primeira invocação (a AWS teve que subir o ambiente da função); nas seguintes ele vira `false` e a latência cai. É um dos motivos de a Lambda ser orientada a eventos: ela dorme e acorda sob demanda.
+
+</blockquote>
+</details>
+
+<details>
+<summary><b>⚠ Se quiser o mapa visual do X-Ray (service map)</b></summary>
+<blockquote>
+
+O X-Ray **coleta** os traces (o tracing está ativo na Lambda), mas a conta do **AWS Academy Learner Lab não dá permissão** para a sua identidade abrir o *service map* / a lista de traces no console — você verá um banner vermelho de "não autorizado". Isso é um limite do Academy, não um erro seu.
+
+Link (só funciona em conta AWS comum, no Academy mostra o banner): **[CloudWatch → X-Ray traces](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#xray:traces/query)**. Lá apareceria o fluxo `API Gateway → Lambda → S3` com o tempo de cada salto. No lab, a observabilidade vem pelos **logs** (acima) e pelo **dashboard** (passo 6).
+
+</blockquote>
+</details>
 
 > [!IMPORTANT]
 > A Fase 1 **funciona** e está observável. Antes de seguir, **destrua** esta fase para liberar os recursos (cada fase é independente e recria o que precisa):
@@ -372,7 +422,7 @@ Saída esperada: `10`. A fila esvaziou e os 10 pedidos chegaram ao data lake —
 terraform -chdir=/workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-2-fila output -raw dashboard_url
 ```
 
-Compare com o da Fase 1: agora você vê a **profundidade da fila** subir e zerar, a **latência do produtor vs consumidor** (o produtor é muito mais rápido) e a **DLQ** (vazia, porque nada falhou).
+Abra a URL impressa — ou vá direto pelo link **[CloudWatch → Dashboards → PedeJa-Fase2-Fila](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards/dashboard/PedeJa-Fase2-Fila)**. Compare com o da Fase 1: agora você vê a **profundidade da fila** subir e zerar, a **latência do produtor vs consumidor** (o produtor é muito mais rápido) e a **DLQ** (vazia, porque nada falhou).
 
 <!-- PRINT SUGERIDO: img/f2-dashboard.png
      Dashboard PedeJa-Fase2-Fila: backlog da fila, latencia produtor vs consumidor, DLQ zerada, enfileirados vs processados. -->
@@ -507,7 +557,7 @@ Saída esperada: `10` objetos no S3 **e** as 4 cidades (Belo Horizonte, Curitiba
 terraform -chdir=/workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-3-streaming output -raw dashboard_url
 ```
 
-O gráfico **publicados vs data lake vs faturamento** mostra os três números iguais (10): um produtor, dois consumidores, todos vendo o mesmo stream. O faturamento por cidade bate com a tabela da Parte 1.
+Abra a URL impressa — ou vá direto pelo link **[CloudWatch → Dashboards → PedeJa-Fase3-Streaming](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards/dashboard/PedeJa-Fase3-Streaming)**. O gráfico **publicados vs data lake vs faturamento** mostra os três números iguais (10): um produtor, dois consumidores, todos vendo o mesmo stream. O faturamento por cidade bate com a tabela da Parte 1.
 
 <!-- PRINT SUGERIDO: img/f3-dashboard.png
      Dashboard PedeJa-Fase3-Streaming: trafego publicados vs 2 consumidores, e faturamento em tempo real por cidade. -->
